@@ -3,6 +3,7 @@
 import requests
 import json
 import re
+import os
 import sys
 import time
 import traceback
@@ -11,9 +12,9 @@ from datetime import datetime
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-username = ''
-password = ''
-hostname = ''
+username = os.environ['bvt_username']
+password = os.environ['bvt_password']
+hostname = os.environ['bvt_hostname']
 
 def print_err(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
@@ -23,6 +24,12 @@ def find_property(properties, name):
 
 def is_4xx_error(code):
     return code < 500 and code >= 400
+
+def is_expected(expected, value):
+    if isinstance(expected, list):
+        return value in expected
+    else:
+        return value == expected
 
 class ApiClient:
     def __init__(self, hostname, username, password):
@@ -38,13 +45,13 @@ class ApiClient:
         url = self.url(path)
         res = requests.request(method, url, verify=False, auth=(username, password), **kwargs)
         msg = '''
-%s %s
-Headers: %s
-Body: %s
+* %s %s
+* Headers: %s
+* Body: %s
 
-Code: %d
-Headers: %s
-Body: %s
+* Code: %d
+* Headers: %s
+* Body: %s
         ''' % (
             res.request.method, res.request.url, res.request.headers, res.request.body,
             res.status_code, res.headers, res.text
@@ -52,28 +59,49 @@ Body: %s
         print_err(msg)
         return res
 
+class TestCounter:
+    def __init__(self):
+        self.pass_count = 0
+        self.fail_count = 0
+
 class TestBase:
-    def __init__(self, api_client, title):
+    title = ''
+    counter = TestCounter()
+
+    def __init__(self, api_client):
         self.api_client = api_client
-        self.title = title
         self.passed = None
 
     def start(self):
         try:
-            print('# %s' % self.title)
+            print('# %s' % self.__class__.title)
             self.run()
         except AssertionError as error:
+            self.__class__.counter.fail_count += 1
             self.passed = False
             print('Failed with error: %s' % str(error))
             traceback.print_exc()
         else:
+            self.__class__.counter.pass_count += 1
             self.passed = True
             print('Passed!')
 
     def run(self):
         pass
 
+    @classmethod
+    def report(cls):
+        msg = '''
+## Total Result
+* Total: %d
+* Passed: %d
+* Failed: %d
+''' % (cls.counter.pass_count + cls.counter.fail_count, cls.counter.pass_count, cls.counter.fail_count)
+        print(msg)
+
 class QueryClusterTest(TestBase):
+    title = 'Query Cluster'
+
     def run(self):
         print('## Query cluster version')
         res = self.api_client.invoke('GET', '/cluster/version')
@@ -97,6 +125,8 @@ class QueryClusterTest(TestBase):
         assert body
 
 class QueryNodeTest(TestBase):
+    title = 'Query Node'
+
     def run(self):
         print('## Query nodes')
         params = { '$filter': 'NodeState eq Online', 'rowsPerRead': 2 }
@@ -131,21 +161,24 @@ class QueryNodeTest(TestBase):
         res = self.api_client.invoke('GET', '/nodes/groups')
         assert res.ok
         body = res.json()
-        assert isinstance(body, list)
-        assert body
+        assert isinstance(body, list) and body
+        props = body[0]['Properties']
+        prop = find_property(props, 'Name')
+        assert prop and prop['Value']
 
-        print('## Query node group HeadNodes')
-        res = self.api_client.invoke('GET', '/nodes/groups/HeadNodes')
+        group_name = prop['Value']
+
+        print('## Query node group %s' % group_name)
+        res = self.api_client.invoke('GET', '/nodes/groups/%s' % group_name)
         assert res.ok
         body = res.json()
         assert isinstance(body, list)
-        assert body and node_name in body
 
-        invalid_node_group = 'thisisaninvalidnodegroup'
+        # invalid_node_group = 'thisisaninvalidnodegroup'
 
-        print('## Query invalid node group %s' % invalid_node_group )
-        res = self.api_client.invoke('GET', '/nodes/groups/%s' % invalid_node_group)
-        assert is_4xx_error(res.status_code)
+        # print('## Query invalid node group %s' % invalid_node_group )
+        # res = self.api_client.invoke('GET', '/nodes/groups/%s' % invalid_node_group)
+        # assert is_4xx_error(res.status_code)
 
 class JobOperationTest(TestBase):
     run_until_cancel_job = '''
@@ -192,7 +225,7 @@ class JobOperationTest(TestBase):
             res = self.api_client.invoke('GET', '/jobs/%d?properties=Id,State,ErrorMessage' % job_id)
             assert res.ok
             prop = find_property(res.json(), 'State')
-            if prop['Value'] == state:
+            if is_expected(state, prop['Value']):
                 ready = True
                 break
             else:
@@ -201,6 +234,8 @@ class JobOperationTest(TestBase):
         return res
 
 class CancelJobTest(JobOperationTest):
+    title = 'Cancel Job'
+
     def run(self):
         job_id = self.create_run_until_cancel_job()
         self.wait_job(job_id, 'Running')
@@ -215,6 +250,8 @@ class CancelJobTest(JobOperationTest):
         assert prop and msg in prop['Value']
 
 class FinishJobTest(JobOperationTest):
+    title = 'Finish Job'
+
     def run(self):
         job_id = self.create_run_until_cancel_job()
         self.wait_job(job_id, 'Running')
@@ -230,6 +267,8 @@ class FinishJobTest(JobOperationTest):
         # assert prop and msg in prop['Value']
 
 class RequeueJobTest(JobOperationTest):
+    title = 'Requeue Job'
+
     def run(self):
         job_id = self.create_run_until_cancel_job()
         self.wait_job(job_id, 'Running')
@@ -244,7 +283,7 @@ class RequeueJobTest(JobOperationTest):
         res = self.api_client.invoke('POST', '/jobs/%d/requeue' % job_id)
         assert res.ok
 
-        self.wait_job(job_id, 'Running')
+        self.wait_job(job_id, ['Queued', 'Running'])
 
         print('## Finish job %d' % job_id)
         res = self.api_client.invoke('POST', '/jobs/%d/finish' % job_id, json="Finished by BVT tester.")
@@ -253,6 +292,8 @@ class RequeueJobTest(JobOperationTest):
         self.wait_job(job_id, 'Finished')
 
 class CreateJobTest(JobOperationTest):
+    title = 'Create Job'
+
     def run(self):
         print('## Create a job')
         job = [
@@ -320,6 +361,8 @@ class CreateJobTest(JobOperationTest):
             assert prop and prop['Value'] == 'Finished'
 
 class QueryJobTest(JobOperationTest):
+    title = 'Query Job'
+
     def run(self):
         now = datetime.utcnow()
         for _ in range(4):
@@ -377,7 +420,19 @@ class QueryJobTest(JobOperationTest):
         res = self.api_client.invoke('GET', '/jobs/%d' % invalid_job_id)
         assert is_4xx_error(res.status_code)
 
+class QueryJobTemplateTest(JobOperationTest):
+    title = 'Query Job Template'
+
+    def run(self):
+        print('## Query job template')
+        res = self.api_client.invoke('GET', '/jobs/templates')
+        assert res.ok
+        body = res.json()
+        assert isinstance(body, list) and 'Default' in body
+
 class JobEnvTest(JobOperationTest):
+    title = 'Set/Get Job Environment Variable'
+
     def run(self):
         print('## Create a job from XML')
         # NOTE: the echo command should output an envrionment variable on both Linux and Windows.
@@ -429,6 +484,8 @@ class JobEnvTest(JobOperationTest):
         assert prop and re.search('\\b%s\\b' % value, prop['Value'])
 
 class JobCustomPropertyTest(JobOperationTest):
+    title = 'Set/Get Job Custom Properties'
+
     def run(self):
         print('## Create a job from XML')
         # NOTE: the echo command should output an envrionment variable on both Linux and Windows.
@@ -479,6 +536,51 @@ class JobCustomPropertyTest(JobOperationTest):
         prop = find_property(body, 'Output')
         assert prop and not re.search('\\b%s\\b' % value, prop['Value'])
 
+class SetJobPropertyTest(JobOperationTest):
+    title = 'Set Job Properties'
+
+    def run(self):
+        job_id = self.create_run_until_cancel_job()
+
+        # Job name can't be changed in Queued state.
+        self.wait_job(job_id, 'Running')
+
+        print('## Update properties of job %d' % job_id)
+        name = 'Name'
+        value = 'Updated Name'
+        props = [{ 'name': name, 'value': value }]
+        res = self.api_client.invoke('PUT', '/jobs/%d' % job_id, json=props)
+        assert res.ok
+
+        print('## Query properties of job %d' % job_id)
+        res = self.api_client.invoke('GET', '/jobs/%d' % job_id, params={ 'properties': 'Id,Name,State' })
+        assert res.ok
+        body = res.json()
+        assert isinstance(body, list) and body
+        prop = find_property(body, name)
+        assert prop and prop['Value'] == value
+
+        print('## Cancel job %d' % job_id)
+        res = self.api_client.invoke('POST', '/jobs/%d/cancel' % job_id)
+        assert res.ok
+
+        # Job name can't be changed after Canceled state.
+        self.wait_job(job_id, 'Canceled')
+
+        print('## Update properties of job %d' % job_id)
+        value2 = 'Updated again'
+        props = [{ 'name': name, 'value': value2 }]
+        res = self.api_client.invoke('PUT', '/jobs/%d' % job_id, json=props)
+        assert is_4xx_error(res.status_code)
+
+        print('## Query properties of job %d' % job_id)
+        res = self.api_client.invoke('GET', '/jobs/%d' % job_id, params={ 'properties': 'Id,Name,State' })
+        assert res.ok
+        body = res.json()
+        assert isinstance(body, list) and body
+        prop = find_property(body, name)
+        assert prop and prop['Value'] == value
+
 class TaskOperationTest(JobOperationTest):
     # NOTE: The command should be runnable on both Windows and Linux
     job_with_long_running_task = '''
@@ -510,7 +612,28 @@ class TaskOperationTest(JobOperationTest):
             res = self.api_client.invoke('GET', '/jobs/%d/tasks/%d?properties=TaskId,State,ErrorMessage' % (job_id, task_id))
             assert res.ok
             prop = find_property(res.json(), 'State')
-            if prop['Value'] == state:
+            if is_expected(state, prop['Value']):
+                ready = True
+                break
+            else:
+                time.sleep(1)
+        assert ready
+        return res
+
+    def wait_subtask(self, job_id, task_id, subtask_id, state):
+        print('## Wait subtask %d of task %d of job %d to be %s' % (subtask_id, task_id, job_id, state))
+        ready = None
+        for _ in range(30):
+            res = self.api_client.invoke('GET',
+                '/jobs/%d/tasks/%d/subtasks/%d?properties=TaskId,State,ErrorMessage' % (job_id, task_id, subtask_id))
+            if not res.ok:
+                if is_4xx_error(res.status_code) and 'the specified subtask has not been expanded yet' in res.text:
+                    time.sleep(1)
+                    continue
+                else:
+                    assert False
+            prop = find_property(res.json(), 'State')
+            if is_expected(state, prop['Value']):
                 ready = True
                 break
             else:
@@ -519,6 +642,8 @@ class TaskOperationTest(JobOperationTest):
         return res
 
 class QueryTaskTest(TaskOperationTest):
+    title = 'Query Task'
+
     def run(self):
         print('## Create job from XML')
         xml_job = '''
@@ -566,6 +691,8 @@ class QueryTaskTest(TaskOperationTest):
         assert is_4xx_error(res.status_code)
 
 class CancelTaskTest(TaskOperationTest):
+    title = 'Cancel Task'
+
     def run(self):
         job_id = self.create_job_with_long_running_task()
 
@@ -576,15 +703,17 @@ class CancelTaskTest(TaskOperationTest):
         res = self.api_client.invoke('POST', '/jobs/%d/tasks/1/cancel' % job_id, json=msg)
         assert res.ok
 
-        # NOTE: When a task is canceled, its state will be "Failed"?
+        # NOTE: When a task is canceled, its state will be "Failed".
         res = self.wait_task(job_id, 1, "Failed")
         prop = find_property(res.json(), 'ErrorMessage')
         assert prop and msg in prop['Value']
 
-        # NOTE: When a task is canceled, its parent job will fail?
+        # NOTE: When a task is canceled, its parent job will fail.
         self.wait_job(job_id, "Failed")
 
 class FinishTaskTest(TaskOperationTest):
+    title = 'Finish Task'
+
     def run(self):
         job_id = self.create_job_with_long_running_task()
 
@@ -596,14 +725,16 @@ class FinishTaskTest(TaskOperationTest):
         assert res.ok
 
         res = self.wait_task(job_id, 1, "Finished")
-        # NOTE: When a job is "Finished", the error message is set as expected. But It's not
-        # true when finishing a job!
+        # NOTE: When a task is "Finished", the error message is set as expected. But It's not
+        # when finishing a job!
         prop = find_property(res.json(), 'ErrorMessage')
         assert prop and msg in prop['Value']
 
         self.wait_job(job_id, "Finished")
 
 class RequeueTaskTest(TaskOperationTest):
+    title = 'Requeue Task'
+
     def run(self):
         xml_job = '''
 <Job Name="RunUntilCanceledJob" MinCores="1" MaxCores="1" RunUntilCanceled="True" >
@@ -625,7 +756,7 @@ class RequeueTaskTest(TaskOperationTest):
         print('## Requeue task of job %d' % job_id)
         res = self.api_client.invoke('POST', '/jobs/%d/tasks/1/requeue' % job_id)
 
-        self.wait_task(job_id, 1, "Running")
+        self.wait_task(job_id, 1, ['Queued', 'Running'])
 
         print('## Cancel job %d' % job_id)
         res = self.api_client.invoke('POST', '/jobs/%d/cancel' % job_id)
@@ -634,7 +765,9 @@ class RequeueTaskTest(TaskOperationTest):
         # NOTE: To ensure a single node can finish all the tests, wait it over.
         self.wait_job(job_id, "Canceled")
 
-class CreateParametricSweepJobTest(JobOperationTest):
+class CreatePSJobTest(JobOperationTest):
+    title = 'Create Parameteric Sweep Task'
+
     def run(self):
         print('## Create job from XML')
         xml_job = '''
@@ -646,6 +779,9 @@ class CreateParametricSweepJobTest(JobOperationTest):
 </Job>
         '''
         job_id = self.create_job(xml_job)
+
+        # Wait for the Parametric Sweep job expanding
+        self.wait_job(job_id, ['Running', 'Finishing', 'Finished'])
 
         print('## Query tasks of job %d' % job_id)
         params = { 'properties': 'TaskId,Name,State,CommandLine' }
@@ -661,26 +797,329 @@ class CreateParametricSweepJobTest(JobOperationTest):
         assert isinstance(body, list) and len(body) == 2
 
 class CancelSubtaskTest(TaskOperationTest):
+    title = 'Cancel Subtask'
+
     def run(self):
         job_id = self.create_job_with_long_running_subtask()
 
         self.wait_subtask(job_id, 1, 1, 'Running')
 
         print('## Cancel subtask')
+        msg = "Canceled by test."
+        res = self.api_client.invoke('POST', '/jobs/%d/tasks/1/subtasks/1/cancel' % job_id, json=msg)
+
+        res = self.wait_subtask(job_id, 1, 1, "Failed")
+        prop = find_property(res.json(), 'ErrorMessage')
+        assert prop and msg in prop['Value']
+
+        print('## Cancel job %d' % job_id)
+        self.api_client.invoke('POST', '/jobs/%d/cancel' % job_id)
+
+        self.wait_job(job_id, "Canceled")
+
+class FinishSubtaskTest(TaskOperationTest):
+    title = 'Finish Subtask'
+
+    def run(self):
+        job_id = self.create_job_with_long_running_subtask()
+
+        self.wait_subtask(job_id, 1, 1, 'Running')
+
+        print('## Finish subtask')
+        msg = "Finished by test."
+        res = self.api_client.invoke('POST', '/jobs/%d/tasks/1/subtasks/1/finish' % job_id, json=msg)
+
+        res = self.wait_subtask(job_id, 1, 1, "Finished")
+        prop = find_property(res.json(), 'ErrorMessage')
+        assert prop and msg in prop['Value']
+
+        print('## Cancel job %d' % job_id)
+        self.api_client.invoke('POST', '/jobs/%d/cancel' % job_id)
+
+        self.wait_job(job_id, "Canceled")
+
+class RequeueSubtaskTest(TaskOperationTest):
+    title = 'Requeue Subtask'
+
+    def run(self):
+        xml_job = '''
+<Job Name="ParametricSweepJob" RunUntilCanceled="True" MinCores="1" MaxCores="1">
+  <Tasks>
+    <Task CommandLine="sleep 15 || ping localhost -n 15" StartValue="1" EndValue="3" IncrementValue="1" Type="ParametricSweep" MinCores="1" MaxCores="1" Name="Sweep Task" />
+  </Tasks>
+</Job>
+        '''
+        job_id = self.create_job(xml_job)
+
+        self.wait_subtask(job_id, 1, 1, 'Running')
+
+        print('## Cancel subtask')
+        msg = "Canceled by test."
+        self.api_client.invoke('POST', '/jobs/%d/tasks/1/subtasks/1/cancel' % job_id, json=msg)
+
+        self.wait_subtask(job_id, 1, 1, "Failed")
+
+        print('## Requeue subtask')
+        self.api_client.invoke('POST', '/jobs/%d/tasks/1/subtasks/1/requeue' % job_id)
+
+        self.wait_subtask(job_id, 1, 1, ['Queued', 'Running'])
+
+        print('## Cancel job %d' % job_id)
+        self.api_client.invoke('POST', '/jobs/%d/cancel' % job_id)
+
+        self.wait_job(job_id, "Canceled")
+
+class TaskEnvTest(TaskOperationTest):
+    title = 'Set/Get Task Environment Variable'
+
+    def run(self):
+        print('## Create a job from XML')
+        # NOTE: the echo command should output an envrionment variable on both Linux and Windows.
+        xml_job = '''
+<Job Name="CustomEnvJob">
+  <Tasks>
+    <Task CommandLine="echo $myvar %myvar%" MinCores="1" MaxCores="1" />
+    <Task CommandLine="echo $myvar %myvar%" MinCores="1" MaxCores="1" />
+  </Tasks>
+</Job>
+        '''
+        res = self.api_client.invoke('POST', '/jobs/jobFile', json=xml_job)
+        assert res.ok
+        body = res.json()
+        assert isinstance(body, int)
+        job_id = int(body)
+
+        print('## Set envrionment variables for task 1 of job %d' % job_id)
+        name = 'myvar'
+        value = 'My Var'
+        env = [
+            { 'Name': name, 'Value': value },
+            { 'Name': 'myvar2', 'Value': 'Another Var' },
+        ]
+        res = self.api_client.invoke('POST', '/jobs/%d/tasks/1/envVariables' % job_id, json=env)
+        assert res.ok
+
+        print('## Submit job %d' % job_id)
+        res = self.api_client.invoke('POST', '/jobs/%d/submit' % job_id)
+        assert res.ok
+
+        self.wait_job(job_id, 'Finished')
+
+        print('## Get envrionment variables of tasks of job %d' % job_id)
+        params = { 'names': name }
+        res = self.api_client.invoke('GET', '/jobs/%d/tasks/1/envVariables' % job_id, params=params)
+        assert res.ok
+        body = res.json()
+        assert isinstance(body, list) and len(body) == 1
+        prop = find_property(body, name)
+        assert prop and prop['Value'] == value
+
+        res = self.api_client.invoke('GET', '/jobs/%d/tasks/2/envVariables' % job_id)
+        assert res.ok
+        body = res.json()
+        assert isinstance(body, list) and len(body) == 0
+
+        print('## Query output of tasks of job %d' % job_id)
+        params = { 'properties': 'TaskId,ExitCode,Output' }
+        res = self.api_client.invoke('GET', '/jobs/%d/tasks/1' % job_id, params=params)
+        assert res.ok
+        body = res.json()
+        assert isinstance(body, list) and body
+        prop = find_property(body, 'Output')
+        assert prop and re.search('\\b%s\\b' % value, prop['Value'])
+
+        res = self.api_client.invoke('GET', '/jobs/%d/tasks/2' % job_id, params=params)
+        assert res.ok
+        body = res.json()
+        assert isinstance(body, list) and body
+        prop = find_property(body, 'Output')
+        assert prop and not re.search('\\b%s\\b' % value, prop['Value'])
+
+class TaskCustomPropertyTest(TaskOperationTest):
+    title = 'Set/Get Task Custom Properties'
+
+    def run(self):
+        print('## Create a job from XML')
+        # NOTE: the echo command should output an envrionment variable on both Linux and Windows.
+        xml_job = '''
+<Job Name="CustomPropJob">
+  <Tasks>
+    <Task CommandLine="echo $myvar %myvar%" MinCores="1" MaxCores="1" />
+  </Tasks>
+</Job>
+        '''
+        res = self.api_client.invoke('POST', '/jobs/jobFile', json=xml_job)
+        assert res.ok
+        body = res.json()
+        assert isinstance(body, int)
+        job_id = int(body)
+
+        print('## Set custom properties for task 1 of job %d' % job_id)
+        name = 'myvar'
+        value = 'My Var'
+        env = [
+            { 'Name': name, 'Value': value },
+            { 'Name': 'myvar2', 'Value': 'Another Var' },
+        ]
+        res = self.api_client.invoke('POST', '/jobs/%d/tasks/1/customProperties' % job_id, json=env)
+        assert res.ok
+
+        print('## Submit job %d' % job_id)
+        res = self.api_client.invoke('POST', '/jobs/%d/submit' % job_id)
+        assert res.ok
+
+        self.wait_job(job_id, 'Finished')
+
+        print('## Get custom properties of tasks of job %d' % job_id)
+        params = { 'names': name }
+        res = self.api_client.invoke('GET', '/jobs/%d/tasks/1/customProperties' % job_id, params=params)
+        assert res.ok
+        body = res.json()
+        assert isinstance(body, list) and len(body) == 1
+        prop = find_property(body, name)
+        assert prop and prop['Value'] == value
+
+        print('## Query output of tasks of job %d' % job_id)
+        params = { 'properties': 'TaskId,ExitCode,Output' }
+        res = self.api_client.invoke('GET', '/jobs/%d/tasks/1' % job_id, params=params)
+        assert res.ok
+        body = res.json()
+        assert isinstance(body, list) and body
+        prop = find_property(body, 'Output')
+        assert prop and not re.search('\\b%s\\b' % value, prop['Value'])
+
+class SetTaskPropertyTest(TaskOperationTest):
+    title = 'Set Task Properties'
+
+    def run(self):
+        xml_job = '''
+<Job Name="SimpleJob">
+  <Tasks>
+    <Task Name="TestTaskInXML" CommandLine="echo Hello" MinCores="1" MaxCores="1" />
+  </Tasks>
+</Job>
+        '''
+        print('## Create a job from xml')
+        res = self.api_client.invoke('POST', '/jobs/jobFile', json=xml_job)
+        assert res.ok
+        body = res.json()
+        assert isinstance(body, int)
+        job_id = int(body)
+
+        # Properties can be set at Configuring state.
+        print('## Update properties of task 1 of job %d' % job_id)
+        name = 'Name'
+        value = 'Updated Name'
+        props = [{ 'name': name, 'value': value }]
+        res = self.api_client.invoke('PUT', '/jobs/%d/tasks/1' % job_id, json=props)
+        assert res.ok
+
+        print('## Query properties of task 1 of job %d' % job_id)
+        res = self.api_client.invoke('GET', '/jobs/%d/tasks/1' % job_id, params={ 'properties': 'TaskId,Name,State' })
+        assert res.ok
+        body = res.json()
+        assert isinstance(body, list) and body
+        prop = find_property(body, name)
+        assert prop and prop['Value'] == value
+
+        # NOTE: Without Submit, the task state would be Configuring, even when the job is cancled.
+        print('## Submit job %d' % job_id)
+        res = self.api_client.invoke('POST', '/jobs/%d/submit' % job_id)
+        assert res.ok
+
+        self.wait_job(job_id, 'Finished')
+
+        print('## Update properties of task 1 of job %d' % job_id)
+        value2 = 'Updated again'
+        props = [{ 'name': name, 'value': value2 }]
+        res = self.api_client.invoke('PUT', '/jobs/%d/tasks/1' % job_id, json=props)
+        assert is_4xx_error(res.status_code)
+
+        print('## Query properties of task 1 of job %d' % job_id)
+        res = self.api_client.invoke('GET', '/jobs/%d/tasks/1' % job_id, params={ 'properties': 'TaskId,Name,State' })
+        assert res.ok
+        body = res.json()
+        assert isinstance(body, list) and body
+        prop = find_property(body, name)
+        assert prop and prop['Value'] == value
+
+class SetPSTaskPropertyTest(TaskOperationTest):
+    title = 'Set Parameteric Sweep Task Properties'
+
+    def run(self):
+        xml_job = '''
+<Job Name="ParametricSweepJob" MinCores="1" MaxCores="1">
+  <Tasks>
+    <Task CommandLine="echo *" StartValue="1" EndValue="3" IncrementValue="1" Type="ParametricSweep" MinCores="1" MaxCores="1" Name="Sweep Task" />
+  </Tasks>
+</Job>
+        '''
+        print('## Create a job from xml')
+        res = self.api_client.invoke('POST', '/jobs/jobFile', json=xml_job)
+        assert res.ok
+        body = res.json()
+        assert isinstance(body, int)
+        job_id = int(body)
+
+        print('## Update properties of task 1 of job %d' % job_id)
+        name = 'Name'
+        value = 'Updated Name'
+        props = [{ 'name': name, 'value': value }]
+        res = self.api_client.invoke('PUT', '/jobs/%d/tasks/1' % job_id, json=props)
+        assert res.ok
+
+        print('## Query properties of task 1 of job %d' % job_id)
+        res = self.api_client.invoke('GET', '/jobs/%d/tasks/1' % job_id, params={ 'properties': 'TaskId,Name,State' })
+        assert res.ok
+        body = res.json()
+        assert isinstance(body, list) and body
+        prop = find_property(body, name)
+        assert prop and prop['Value'] == value
+
+        print('## Submit job %d' % job_id)
+        res = self.api_client.invoke('POST', '/jobs/%d/submit' % job_id)
+        assert res.ok
+
+        self.wait_job(job_id, 'Finished')
+
+        print('## Update properties of task 1 of job %d' % job_id)
+        value2 = 'Updated Name'
+        props = [{ 'name': name, 'value': value2 }]
+        res = self.api_client.invoke('PUT', '/jobs/%d/tasks/1' % job_id, json=props)
+        assert is_4xx_error(res.status_code)
+
+        print('## Query properties of task 1 of job %d' % job_id)
+        res = self.api_client.invoke('GET', '/jobs/%d/tasks/1' % job_id, params={ 'properties': 'TaskId,Name,State' })
+        assert res.ok
+        body = res.json()
+        assert isinstance(body, list) and body
+        prop = find_property(body, name)
+        assert prop and prop['Value'] == value
 
 client = ApiClient(hostname, username, password)
-# QueryClusterTest(client, 'Query Cluster').start()
-# QueryNodeTest(client, 'Query Node').start()
-# QueryJobTest(client, 'Query Job').start()
-# CreateJobTest(client, 'Create Job').start()
-# CancelJobTest(client, 'Cancel Job').start()
-# FinishJobTest(client, 'Finish Job').start()
-# RequeueJobTest(client, 'Requeue Job').start()
-# JobEnvTest(client, 'Set/Get Job Environment Variable').start()
-# JobCustomPropertyTest(client, 'Set/Get Job Custom Properties').start()
-# QueryTaskTest(client, 'Query Task').start()
-# CancelTaskTest(client, 'Cancel Task').start()
-# FinishTaskTest(client, 'Finish Task').start()
-# RequeueTaskTest(client, 'Requeue Task').start()
-# CreateParametricSweepJobTest(client, 'Create Parameteric Sweep Task').start()
 
+QueryClusterTest(client).start()
+QueryNodeTest(client).start()
+QueryJobTemplateTest(client).start()
+QueryJobTest(client).start()
+CreateJobTest(client).start()
+CancelJobTest(client).start()
+FinishJobTest(client).start()
+RequeueJobTest(client).start()
+JobEnvTest(client).start()
+JobCustomPropertyTest(client).start()
+SetJobPropertyTest(client).start()
+QueryTaskTest(client).start()
+CancelTaskTest(client).start()
+FinishTaskTest(client).start()
+RequeueTaskTest(client).start()
+CreatePSJobTest(client).start()
+CancelSubtaskTest(client).start()
+FinishSubtaskTest(client).start()
+RequeueSubtaskTest(client).start()
+TaskEnvTest(client).start()
+TaskCustomPropertyTest(client).start()
+SetTaskPropertyTest(client).start()
+SetPSTaskPropertyTest(client).start()
+
+TestBase.report()
