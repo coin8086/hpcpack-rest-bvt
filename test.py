@@ -1175,5 +1175,7 @@ def main():
 
     TestBase.report()
 
+    sys.exit(TestBase.counter.fail_count)
+
 if __name__ == '__main__':
     main()
