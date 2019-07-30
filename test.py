@@ -12,9 +12,7 @@ from datetime import datetime
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-username = os.environ['bvt_username']
-password = os.environ['bvt_password']
-hostname = os.environ['bvt_hostname']
+WAIT_MAX_TRIES = 30
 
 def print_err(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
@@ -32,18 +30,18 @@ def is_expected(expected, value):
         return value == expected
 
 class ApiClient:
-    def __init__(self, hostname, username, password):
-        self.hostname = hostname
-        self.username = username
-        self.password = password
-        self.apibase = 'https://%s/hpc' % hostname
+    def __init__(self, hostname = None, username = None, password = None):
+        self.hostname = hostname or os.environ['bvt_hostname']
+        self.username = username or os.environ['bvt_username']
+        self.password = password or os.environ['bvt_password']
+        self.apibase = 'https://%s/hpc' % self.hostname
 
     def url(self, path):
         return self.apibase + path
 
     def invoke(self, method, path, **kwargs):
         url = self.url(path)
-        res = requests.request(method, url, verify=False, auth=(username, password), **kwargs)
+        res = requests.request(method, url, verify=False, auth=(self.username, self.password), **kwargs)
         msg = '''
 * %s %s
 * Headers: %s
@@ -221,7 +219,7 @@ class JobOperationTest(TestBase):
     def wait_job(self, job_id, state):
         print('## Wait job %d to be %s' % (job_id, state))
         ready = None
-        for _ in range(30):
+        for _ in range(WAIT_MAX_TRIES):
             res = self.api_client.invoke('GET', '/jobs/%d?properties=Id,State,ErrorMessage' % job_id)
             assert res.ok
             prop = find_property(res.json(), 'State')
@@ -594,7 +592,7 @@ class TaskOperationTest(JobOperationTest):
     job_with_long_running_subtask = '''
 <Job Name="ParametricSweepJob" MinCores="1" MaxCores="1">
   <Tasks>
-    <Task CommandLine="sleep 6* || ping localhost -n 6*" StartValue="1" EndValue="3" IncrementValue="1" Type="ParametricSweep" MinCores="1" MaxCores="1" Name="Sweep Task" />
+    <Task CommandLine="sleep 60 || ping localhost -n 60" StartValue="1" EndValue="3" IncrementValue="1" Type="ParametricSweep" MinCores="1" MaxCores="1" Name="Sweep Task" />
   </Tasks>
 </Job>
     '''
@@ -608,7 +606,7 @@ class TaskOperationTest(JobOperationTest):
     def wait_task(self, job_id, task_id, state):
         print('## Wait task %d of job %d to be %s' % (task_id, job_id, state))
         ready = None
-        for _ in range(30):
+        for _ in range(WAIT_MAX_TRIES):
             res = self.api_client.invoke('GET', '/jobs/%d/tasks/%d?properties=TaskId,State,ErrorMessage' % (job_id, task_id))
             assert res.ok
             prop = find_property(res.json(), 'State')
@@ -623,7 +621,7 @@ class TaskOperationTest(JobOperationTest):
     def wait_subtask(self, job_id, task_id, subtask_id, state):
         print('## Wait subtask %d of task %d of job %d to be %s' % (subtask_id, task_id, job_id, state))
         ready = None
-        for _ in range(30):
+        for _ in range(WAIT_MAX_TRIES):
             res = self.api_client.invoke('GET',
                 '/jobs/%d/tasks/%d/subtasks/%d?properties=TaskId,State,ErrorMessage' % (job_id, task_id, subtask_id))
             if not res.ok:
@@ -842,10 +840,11 @@ class RequeueSubtaskTest(TaskOperationTest):
     title = 'Requeue Subtask'
 
     def run(self):
+        # NOTE: To ensure the test can be done on a node with only 2 cores, limit the number of subtasks to 2.
         xml_job = '''
 <Job Name="ParametricSweepJob" RunUntilCanceled="True" MinCores="1" MaxCores="1">
   <Tasks>
-    <Task CommandLine="sleep 15 || ping localhost -n 15" StartValue="1" EndValue="3" IncrementValue="1" Type="ParametricSweep" MinCores="1" MaxCores="1" Name="Sweep Task" />
+    <Task CommandLine="sleep 60 || ping localhost -n 60" StartValue="1" EndValue="2" IncrementValue="1" Type="ParametricSweep" MinCores="1" MaxCores="1" Name="Sweep Task" />
   </Tasks>
 </Job>
         '''
@@ -1096,30 +1095,34 @@ class SetPSTaskPropertyTest(TaskOperationTest):
         prop = find_property(body, name)
         assert prop and prop['Value'] == value
 
-client = ApiClient(hostname, username, password)
+def main():
+    client = ApiClient()
 
-QueryClusterTest(client).start()
-QueryNodeTest(client).start()
-QueryJobTemplateTest(client).start()
-QueryJobTest(client).start()
-CreateJobTest(client).start()
-CancelJobTest(client).start()
-FinishJobTest(client).start()
-RequeueJobTest(client).start()
-JobEnvTest(client).start()
-JobCustomPropertyTest(client).start()
-SetJobPropertyTest(client).start()
-QueryTaskTest(client).start()
-CancelTaskTest(client).start()
-FinishTaskTest(client).start()
-RequeueTaskTest(client).start()
-CreatePSJobTest(client).start()
-CancelSubtaskTest(client).start()
-FinishSubtaskTest(client).start()
-RequeueSubtaskTest(client).start()
-TaskEnvTest(client).start()
-TaskCustomPropertyTest(client).start()
-SetTaskPropertyTest(client).start()
-SetPSTaskPropertyTest(client).start()
+    QueryClusterTest(client).start()
+    QueryNodeTest(client).start()
+    QueryJobTemplateTest(client).start()
+    QueryJobTest(client).start()
+    CreateJobTest(client).start()
+    CancelJobTest(client).start()
+    FinishJobTest(client).start()
+    RequeueJobTest(client).start()
+    JobEnvTest(client).start()
+    JobCustomPropertyTest(client).start()
+    SetJobPropertyTest(client).start()
+    QueryTaskTest(client).start()
+    CancelTaskTest(client).start()
+    FinishTaskTest(client).start()
+    RequeueTaskTest(client).start()
+    CreatePSJobTest(client).start()
+    CancelSubtaskTest(client).start()
+    FinishSubtaskTest(client).start()
+    RequeueSubtaskTest(client).start()
+    TaskEnvTest(client).start()
+    TaskCustomPropertyTest(client).start()
+    SetTaskPropertyTest(client).start()
+    SetPSTaskPropertyTest(client).start()
 
-TestBase.report()
+    TestBase.report()
+
+if __name__ == '__main__':
+    main()
