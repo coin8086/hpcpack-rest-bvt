@@ -29,6 +29,18 @@ def is_expected(expected, value):
     else:
         return value == expected
 
+def append_as_user(msg, as_user = None):
+    if as_user:
+        msg += ' as user %s' % as_user
+    return msg
+
+def header_as_user(as_user):
+    if as_user:
+        headers = { 'x-ms-as-user': as_user }
+    else:
+        headers = None
+    return headers
+
 class ApiClient:
     def __init__(self, hostname = None, username = None, password = None):
         self.hostname = hostname or os.environ['bvt_hostname']
@@ -195,23 +207,22 @@ class JobOperationTest(TestBase):
 </Job>
     '''
 
-    def create_simple_job(self):
-        return self.create_job(self.__class__.simple_job)
+    def create_simple_job(self, as_user=None):
+        return self.create_job(self.__class__.simple_job, as_user)
 
-    def create_run_until_cancel_job(self):
-        return self.create_job(self.__class__.run_until_cancel_job)
+    def create_run_until_cancel_job(self, as_user=None):
+        return self.create_job(self.__class__.run_until_cancel_job, as_user)
 
-    def create_job(self, xml_job):
-        print('## Create a job from xml')
-
-        res = self.api_client.invoke('POST', '/jobs/jobFile', json=xml_job)
+    def create_job(self, xml_job, as_user=None):
+        print(append_as_user('## Create a job from xml', as_user))
+        res = self.api_client.invoke('POST', '/jobs/jobFile', json=xml_job, headers=header_as_user(as_user))
         assert res.ok
         body = res.json()
         assert isinstance(body, int)
         job_id = int(body)
 
-        print('## Submit job %d' % job_id)
-        res = self.api_client.invoke('POST', '/jobs/%d/submit' % job_id)
+        print(append_as_user('## Submit job %d' % job_id, as_user))
+        res = self.api_client.invoke('POST', '/jobs/%d/submit' % job_id, headers=header_as_user(as_user))
         assert res.ok
 
         return job_id
@@ -1095,6 +1106,39 @@ class SetPSTaskPropertyTest(TaskOperationTest):
         prop = find_property(body, name)
         assert prop and prop['Value'] == value
 
+class ServiceAsClientTest(JobOperationTest):
+    title = 'Service as Client'
+
+    # NOTE: To pass the test, the username in api_client must be of role "Administrator" or "Job Administrator".
+    def __init__(self, api_client, as_user):
+        super().__init__(api_client)
+        self.as_user = as_user
+
+    def run(self):
+        job_id = self.create_simple_job(self.as_user)
+
+        print('## Query job %d' % job_id)
+        res = self.api_client.invoke('GET', '/jobs/%d' % job_id, params={ 'properties': 'Id,State,Owner' })
+        assert res.ok
+        body = res.json()
+        assert isinstance(body, list) and body
+        prop = find_property(body, 'Owner')
+        assert prop and prop['Value'].lower() == self.as_user.lower()
+
+        self.wait_job(job_id, 'Finished')
+
+        job_id = self.create_run_until_cancel_job()
+
+        print(append_as_user('## Cancel job %d' % job_id, self.as_user));
+        res = self.api_client.invoke('POST', '/jobs/%d/cancel' % job_id, headers=header_as_user(self.as_user))
+        assert is_4xx_error(res.status_code)
+
+        print('## Cancel job %d' % job_id);
+        res = self.api_client.invoke('POST', '/jobs/%d/cancel' % job_id)
+        assert res.ok
+
+        self.wait_job(job_id, 'Canceled')
+
 def main():
     client = ApiClient()
 
@@ -1121,6 +1165,13 @@ def main():
     TaskCustomPropertyTest(client).start()
     SetTaskPropertyTest(client).start()
     SetPSTaskPropertyTest(client).start()
+
+    name = 'bvt_username2'
+    value = os.environ.get(name, None)
+    if value:
+        ServiceAsClientTest(client, value).start()
+    else:
+        print('# Skiped ServiceAsClientTest since no %s defined.' % name)
 
     TestBase.report()
 
