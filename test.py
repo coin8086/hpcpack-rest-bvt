@@ -705,7 +705,7 @@ class CancelTaskTest(TaskOperationTest):
     def run(self):
         job_id = self.create_job_with_long_running_task()
 
-        self.wait_job(job_id, "Running")
+        self.wait_task(job_id, 1, "Running")
 
         print('## Cancel task of job %d' % job_id)
         msg = 'Canceled by test!'
@@ -726,7 +726,7 @@ class FinishTaskTest(TaskOperationTest):
     def run(self):
         job_id = self.create_job_with_long_running_task()
 
-        self.wait_job(job_id, "Running")
+        self.wait_task(job_id, 1, "Running")
 
         print('## Finish task of job %d' % job_id)
         msg = 'Finished by test!'
@@ -754,7 +754,7 @@ class RequeueTaskTest(TaskOperationTest):
         '''
         job_id = self.create_job(xml_job)
 
-        self.wait_job(job_id, "Running")
+        self.wait_task(job_id, 1, "Running")
 
         print('## Cancel task of job %d' % job_id)
         res = self.api_client.invoke('POST', '/jobs/%d/tasks/1/cancel' % job_id)
