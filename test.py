@@ -1039,19 +1039,20 @@ class SetTaskPropertyTest(TaskOperationTest):
 
         self.wait_job(job_id, 'Finished')
 
-        print('## Update properties of task 1 of job %d' % job_id)
-        value2 = 'Updated again'
-        props = [{ 'name': name, 'value': value2 }]
-        res = self.api_client.invoke('PUT', '/jobs/%d/tasks/1' % job_id, json=props)
-        assert is_4xx_error(res.status_code)
+        # NOTE: Do not test updating task after submitting it, since the behaviour is unsure.
+        # print('## Update properties of task 1 of job %d' % job_id)
+        # value2 = 'Updated again'
+        # props = [{ 'name': name, 'value': value2 }]
+        # res = self.api_client.invoke('PUT', '/jobs/%d/tasks/1' % job_id, json=props)
+        # assert is_4xx_error(res.status_code)
 
-        print('## Query properties of task 1 of job %d' % job_id)
-        res = self.api_client.invoke('GET', '/jobs/%d/tasks/1' % job_id, params={ 'properties': 'TaskId,Name,State' })
-        assert res.ok
-        body = res.json()
-        assert isinstance(body, list) and body
-        prop = find_property(body, name)
-        assert prop and prop['Value'] == value
+        # print('## Query properties of task 1 of job %d' % job_id)
+        # res = self.api_client.invoke('GET', '/jobs/%d/tasks/1' % job_id, params={ 'properties': 'TaskId,Name,State' })
+        # assert res.ok
+        # body = res.json()
+        # assert isinstance(body, list) and body
+        # prop = find_property(body, name)
+        # assert prop and prop['Value'] == value
 
 class SetPSTaskPropertyTest(TaskOperationTest):
     title = 'Set Parameteric Sweep Task Properties'
@@ -1092,19 +1093,20 @@ class SetPSTaskPropertyTest(TaskOperationTest):
 
         self.wait_job(job_id, 'Finished')
 
-        print('## Update properties of task 1 of job %d' % job_id)
-        value2 = 'Updated Name'
-        props = [{ 'name': name, 'value': value2 }]
-        res = self.api_client.invoke('PUT', '/jobs/%d/tasks/1' % job_id, json=props)
-        assert is_4xx_error(res.status_code)
+        # NOTE: Do not test updating task after submitting it, since the behaviour is unsure.
+        # print('## Update properties of task 1 of job %d' % job_id)
+        # value2 = 'Updated Name'
+        # props = [{ 'name': name, 'value': value2 }]
+        # res = self.api_client.invoke('PUT', '/jobs/%d/tasks/1' % job_id, json=props)
+        # assert is_4xx_error(res.status_code)
 
-        print('## Query properties of task 1 of job %d' % job_id)
-        res = self.api_client.invoke('GET', '/jobs/%d/tasks/1' % job_id, params={ 'properties': 'TaskId,Name,State' })
-        assert res.ok
-        body = res.json()
-        assert isinstance(body, list) and body
-        prop = find_property(body, name)
-        assert prop and prop['Value'] == value
+        # print('## Query properties of task 1 of job %d' % job_id)
+        # res = self.api_client.invoke('GET', '/jobs/%d/tasks/1' % job_id, params={ 'properties': 'TaskId,Name,State' })
+        # assert res.ok
+        # body = res.json()
+        # assert isinstance(body, list) and body
+        # prop = find_property(body, name)
+        # assert prop and prop['Value'] == value
 
 class ServiceAsClientTest(JobOperationTest):
     title = 'Service as Client'
