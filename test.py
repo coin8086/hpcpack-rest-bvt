@@ -20,6 +20,10 @@ def print_err(*args, **kwargs):
 def find_property(properties, name):
     return next((e for e in properties if e['Name'] == name), None)
 
+def find_property_value(properties, name):
+    p = find_property(properties, name)
+    return p['Value'] if p != None else None
+
 def is_4xx_error(code):
     return code < 500 and code >= 400
 
@@ -139,7 +143,7 @@ class QueryNodeTest(TestBase):
 
     def run(self):
         print('## Query nodes')
-        params = { '$filter': 'NodeState eq Online', 'rowsPerRead': 2 }
+        params = { '$filter': 'NodeState eq Online', 'properties': 'id,name', 'rowsPerRead': 2 }
         res = self.api_client.invoke('GET', '/nodes', params=params)
         assert res.ok
         body = res.json()
@@ -151,6 +155,51 @@ class QueryNodeTest(TestBase):
         assert prop and prop['Value']
 
         node_name = prop['Value']
+
+        print('## Query nodes in pagination')
+        page_size = 2
+        params = { '$filter': 'NodeState eq Online', 'properties': 'id,name', 'rowsPerRead': page_size, 'startRow': 0 }
+        res = self.api_client.invoke('GET', '/nodes', params=params)
+        assert res.ok
+        body = res.json()
+        assert isinstance(body, list)
+        assert body and len(body) <= params['rowsPerRead']
+        row_count = int(res.headers['x-ms-row-count'])
+        assert row_count >= 1
+
+        params['startRow'] = row_count - 1
+        res = self.api_client.invoke('GET', '/nodes', params=params)
+        assert res.ok
+        body = res.json()
+        assert isinstance(body, list)
+        assert body and len(body) == 1
+        assert int(res.headers['x-ms-row-count']) == row_count
+
+        params['startRow'] = row_count
+        res = self.api_client.invoke('GET', '/nodes', params=params)
+        assert res.ok
+        body = res.json()
+        assert isinstance(body, list)
+        assert len(body) == 0
+        assert int(res.headers['x-ms-row-count']) == row_count
+
+        print('## Query nodes with sorting')
+        params = { '$filter': 'NodeState eq Online', 'properties': 'id,name', 'rowsPerRead': row_count, 'startRow': 0, 'sortNodesBy': 'Id', 'asc': True }
+        res = self.api_client.invoke('GET', '/nodes', params=params)
+        assert res.ok
+        body = res.json()
+        assert isinstance(body, list)
+        ids = [find_property_value(n['Properties'], 'Id') for n in body]
+
+        params['asc'] = False
+        res = self.api_client.invoke('GET', '/nodes', params=params)
+        assert res.ok
+        body = res.json()
+        assert isinstance(body, list)
+        ids2 = [find_property_value(n['Properties'], 'Id') for n in body]
+        ids2.reverse()
+
+        assert ids == ids2
 
         print('## Query node %s' % node_name)
         res = self.api_client.invoke('GET', '/nodes/%s' % node_name)
@@ -374,8 +423,9 @@ class QueryJobTest(JobOperationTest):
 
     def run(self):
         now = datetime.utcnow()
-        for _ in range(4):
-            job_id = self.create_simple_job()
+        row_count = 4
+        job_ids = [self.create_simple_job() for _ in range(row_count)]
+        job_id = job_ids[-1]
 
         print('## Query jobs')
         params = {
@@ -409,6 +459,69 @@ class QueryJobTest(JobOperationTest):
             assert body and len(body) <= params['rowsPerRead']
             if not res.headers.get('x-ms-continuation-QueryId', None):
                 break
+
+        print('## Query jobs in pagination')
+        params = {
+            'startRow': 0,
+            'rowsPerRead': 3,
+            'owner': self.api_client.username,
+            'properties': 'Id,Owner,ChangeTime',
+            # Server datetime format is "M/d/yyyy h:mm:ss tt"
+            '$filter': 'ChangeTimeFrom eq %s' % now.strftime('%m/%d/%Y %H:%M:%S')
+        }
+        res = self.api_client.invoke('GET', '/jobs', params=params)
+        assert res.ok
+        body = res.json()
+        assert isinstance(body, list)
+        assert body and len(body) == params['rowsPerRead']
+        assert res.headers['x-ms-row-count'] and int(res.headers['x-ms-row-count']) == row_count
+
+        params['startRow'] = 3
+        page_size = params['rowsPerRead']
+        res = self.api_client.invoke('GET', '/jobs', params=params)
+        assert res.ok
+        body = res.json()
+        assert isinstance(body, list)
+        rest = row_count - page_size
+        assert body and len(body) == page_size if rest >= page_size else rest
+        assert res.headers['x-ms-row-count'] and int(res.headers['x-ms-row-count']) == row_count
+
+        params['startRow'] = row_count
+        res = self.api_client.invoke('GET', '/jobs', params=params)
+        assert res.ok
+        body = res.json()
+        assert isinstance(body, list)
+        assert len(body) == 0
+        assert res.headers['x-ms-row-count'] and int(res.headers['x-ms-row-count']) == row_count
+
+        print('## Query jobs with sorting')
+        params = {
+            'startRow': 0,
+            'rowsPerRead': row_count,
+            'owner': self.api_client.username,
+            'properties': 'Id,Owner,ChangeTime',
+            # Server datetime format is "M/d/yyyy h:mm:ss tt"
+            '$filter': 'ChangeTimeFrom eq %s' % now.strftime('%m/%d/%Y %H:%M:%S'),
+            'sortJobsBy': 'id',
+            'asc': True
+        }
+        res = self.api_client.invoke('GET', '/jobs', params=params)
+        assert res.ok
+        body = res.json()
+        assert isinstance(body, list)
+        assert body and len(body) == row_count
+        ids = [int(find_property_value(job['Properties'], 'Id')) for job in body]
+        assert ids == job_ids
+
+        params['asc'] = False
+        res = self.api_client.invoke('GET', '/jobs', params=params)
+        assert res.ok
+        body = res.json()
+        assert isinstance(body, list)
+        assert body and len(body) == row_count
+        ids = [int(find_property_value(job['Properties'], 'Id')) for job in body]
+        ids.reverse()
+        assert ids == job_ids
 
         print('## Query job %d' % job_id)
         params = { 'properties': 'Id,State,ChangeTime' }
@@ -688,6 +801,46 @@ class QueryTaskTest(TaskOperationTest):
         assert res.ok
         body = res.json()
         assert isinstance(body, list) and len(body) == 1
+
+        print('## Query tasks of job %d in pagination' % job_id)
+        params = { 'properties': 'TaskId,Name,State,CommandLine', 'rowsPerRead': 3, 'startRow': 0 }
+        res = self.api_client.invoke('GET', '/jobs/%d/tasks' % job_id, params=params)
+        assert res.ok
+        body = res.json()
+        assert isinstance(body, list) and len(body) == params['rowsPerRead']
+        assert int(res.headers['x-ms-row-count']) == 4
+
+        params['startRow'] = 3
+        res = self.api_client.invoke('GET', '/jobs/%d/tasks' % job_id, params=params)
+        assert res.ok
+        body = res.json()
+        assert isinstance(body, list) and len(body) == 1
+        assert int(res.headers['x-ms-row-count']) == 4
+
+        params['startRow'] = 4
+        res = self.api_client.invoke('GET', '/jobs/%d/tasks' % job_id, params=params)
+        assert res.ok
+        body = res.json()
+        assert isinstance(body, list) and len(body) == 0
+        assert int(res.headers['x-ms-row-count']) == 4
+
+        print('## Query tasks of job %d with sorting' % job_id)
+        params = { 'properties': 'TaskId,Name,State,CommandLine', 'rowsPerRead': 100, 'startRow': 0, 'sortTasksBy': 'TaskId', 'asc': True }
+        res = self.api_client.invoke('GET', '/jobs/%d/tasks' % job_id, params=params)
+        assert res.ok
+        body = res.json()
+        assert isinstance(body, list) and len(body) == 4
+        ids = [find_property_value(t['Properties'], 'TaskId') for t in body]
+
+        params['asc'] = False
+        res = self.api_client.invoke('GET', '/jobs/%d/tasks' % job_id, params=params)
+        assert res.ok
+        body = res.json()
+        assert isinstance(body, list) and len(body) == 4
+        ids2 = [find_property_value(t['Properties'], 'TaskId') for t in body]
+        ids2.reverse()
+
+        assert ids == ids2
 
         print('## Query a task of job %d' % job_id)
         res = self.api_client.invoke('GET', '/jobs/%d/tasks/4' % job_id)
