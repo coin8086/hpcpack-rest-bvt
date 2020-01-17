@@ -241,7 +241,7 @@ class QueryNodeTest(TestBase):
 
 class JobOperationTest(TestBase):
     run_until_cancel_job = '''
-<Job Name="RunUntilCanceledJob" MinCores="1" MaxCores="1" RunUntilCanceled="True" >
+<Job Name="RunUntilCanceledJob" MinCores="1" MaxCores="1" RunUntilCanceled="True" NodeGroups="ComputeNodes" NodeGroupOp="Uniform" >
   <Tasks>
     <Task Name="TestTaskInXML" CommandLine="echo Hello" MinCores="1" MaxCores="1" />
   </Tasks>
@@ -249,7 +249,7 @@ class JobOperationTest(TestBase):
     '''
 
     simple_job = '''
-<Job Name="SimpleJob">
+<Job Name="SimpleJob" NodeGroups="ComputeNodes" NodeGroupOp="Uniform">
   <Tasks>
     <Task Name="TestTaskInXML" CommandLine="echo Hello" MinCores="1" MaxCores="1" />
   </Tasks>
@@ -557,9 +557,11 @@ class JobEnvTest(JobOperationTest):
 
     def run(self):
         print('## Create a job from XML')
-        # NOTE: the echo command should output an envrionment variable on both Linux and Windows.
+        # NOTE:
+        # 1. The echo command should output an envrionment variable on both Linux and Windows.
+        # 2. Specify ComputeNodes so that the it won't run on AzureBatchPool nodes, which will cause bad "Output"
         xml_job = '''
-<Job Name="CustomEnvJob">
+<Job Name="CustomEnvJob" NodeGroups="ComputeNodes" NodeGroupOp="Uniform">
   <Tasks>
     <Task CommandLine="echo $myvar %myvar%" MinCores="1" MaxCores="1" />
   </Tasks>
@@ -612,7 +614,7 @@ class JobCustomPropertyTest(JobOperationTest):
         print('## Create a job from XML')
         # NOTE: the echo command should output an envrionment variable on both Linux and Windows.
         xml_job = '''
-<Job Name="CustomPropJob">
+<Job Name="CustomPropJob" NodeGroups="ComputeNodes" NodeGroupOp="Uniform">
   <Tasks>
     <Task CommandLine="echo $myvar %myvar%" MinCores="1" MaxCores="1" />
   </Tasks>
@@ -706,7 +708,7 @@ class SetJobPropertyTest(JobOperationTest):
 class TaskOperationTest(JobOperationTest):
     # NOTE: The command should be runnable on both Windows and Linux
     job_with_long_running_task = '''
-<Job>
+<Job NodeGroups="ComputeNodes" NodeGroupOp="Uniform">
   <Tasks>
     <Task CommandLine="sleep 60 || ping localhost -n 60" MinCores="1" MaxCores="1" />
   </Tasks>
@@ -714,7 +716,7 @@ class TaskOperationTest(JobOperationTest):
     '''
 
     job_with_long_running_subtask = '''
-<Job Name="ParametricSweepJob" MinCores="1" MaxCores="1">
+<Job Name="ParametricSweepJob" MinCores="1" MaxCores="1" NodeGroups="ComputeNodes" NodeGroupOp="Uniform">
   <Tasks>
     <Task CommandLine="sleep 60 || ping localhost -n 60" StartValue="1" EndValue="3" IncrementValue="1" Type="ParametricSweep" MinCores="1" MaxCores="1" Name="Sweep Task" />
   </Tasks>
@@ -769,7 +771,7 @@ class QueryTaskTest(TaskOperationTest):
     def run(self):
         print('## Create job from XML')
         xml_job = '''
-<Job Name="JobWithAFewTasks">
+<Job Name="JobWithAFewTasks" NodeGroups="ComputeNodes" NodeGroupOp="Uniform">
   <Tasks>
     <Task CommandLine="echo a" MinCores="1" MaxCores="1" Name="Good Task" />
     <Task CommandLine="echo b" MinCores="1" MaxCores="1" Name="Good Task" />
@@ -899,7 +901,7 @@ class RequeueTaskTest(TaskOperationTest):
 
     def run(self):
         xml_job = '''
-<Job Name="RunUntilCanceledJob" MinCores="1" MaxCores="1" RunUntilCanceled="True" >
+<Job Name="RunUntilCanceledJob" MinCores="1" MaxCores="1" RunUntilCanceled="True" NodeGroups="ComputeNodes" NodeGroupOp="Uniform" >
   <Tasks>
     <Task CommandLine="sleep 60 || ping localhost -n 60" MinCores="1" MaxCores="1" />
   </Tasks>
@@ -933,7 +935,7 @@ class CreatePSJobTest(JobOperationTest):
     def run(self):
         print('## Create job from XML')
         xml_job = '''
-<Job Name="ParametricSweepJob" MinCores="1" MaxCores="1">
+<Job Name="ParametricSweepJob" MinCores="1" MaxCores="1" NodeGroups="ComputeNodes" NodeGroupOp="Uniform">
   <Tasks>
     <Task CommandLine="echo *" StartValue="1" EndValue="3" IncrementValue="1" Type="ParametricSweep" MinCores="1" MaxCores="1" Name="Sweep Task" />
     <Task CommandLine="echo Hello" Name="Basic Task" MinCores="1" MaxCores="1" />
@@ -942,8 +944,10 @@ class CreatePSJobTest(JobOperationTest):
         '''
         job_id = self.create_job(xml_job)
 
-        # Wait for the Parametric Sweep job expanding
-        self.wait_job(job_id, ['Running', 'Finishing', 'Finished'])
+        # Wait for the Parametric Sweep job expanded
+        # NOTE: it seems Running state doesn't ensure subtasks expanded.
+        # self.wait_job(job_id, ['Running', 'Finishing', 'Finished'])
+        self.wait_job(job_id, ['Finishing', 'Finished'])
 
         print('## Query tasks of job %d' % job_id)
         params = { 'properties': 'TaskId,Name,State,CommandLine' }
@@ -1006,7 +1010,7 @@ class RequeueSubtaskTest(TaskOperationTest):
     def run(self):
         # NOTE: To ensure the test can be done on a node with only 2 cores, limit the number of subtasks to 2.
         xml_job = '''
-<Job Name="ParametricSweepJob" RunUntilCanceled="True" MinCores="1" MaxCores="1">
+<Job Name="ParametricSweepJob" RunUntilCanceled="True" MinCores="1" MaxCores="1" NodeGroups="ComputeNodes" NodeGroupOp="Uniform">
   <Tasks>
     <Task CommandLine="sleep 60 || ping localhost -n 60" StartValue="1" EndValue="2" IncrementValue="1" Type="ParametricSweep" MinCores="1" MaxCores="1" Name="Sweep Task" />
   </Tasks>
@@ -1037,9 +1041,11 @@ class TaskEnvTest(TaskOperationTest):
 
     def run(self):
         print('## Create a job from XML')
-        # NOTE: the echo command should output an envrionment variable on both Linux and Windows.
+        # NOTE:
+        # 1. The echo command should output an envrionment variable on both Linux and Windows.
+        # 2. Specify ComputeNodes so that the it won't run on AzureBatchPool nodes, which will cause bad "Output"
         xml_job = '''
-<Job Name="CustomEnvJob">
+<Job Name="CustomEnvJob" NodeGroups="ComputeNodes" NodeGroupOp="Uniform">
   <Tasks>
     <Task CommandLine="echo $myvar %myvar%" MinCores="1" MaxCores="1" />
     <Task CommandLine="echo $myvar %myvar%" MinCores="1" MaxCores="1" />
@@ -1105,7 +1111,7 @@ class TaskCustomPropertyTest(TaskOperationTest):
         print('## Create a job from XML')
         # NOTE: the echo command should output an envrionment variable on both Linux and Windows.
         xml_job = '''
-<Job Name="CustomPropJob">
+<Job Name="CustomPropJob" NodeGroups="ComputeNodes" NodeGroupOp="Uniform">
   <Tasks>
     <Task CommandLine="echo $myvar %myvar%" MinCores="1" MaxCores="1" />
   </Tasks>
@@ -1156,7 +1162,7 @@ class SetTaskPropertyTest(TaskOperationTest):
 
     def run(self):
         xml_job = '''
-<Job Name="SimpleJob">
+<Job Name="SimpleJob" NodeGroups="ComputeNodes" NodeGroupOp="Uniform">
   <Tasks>
     <Task Name="TestTaskInXML" CommandLine="echo Hello" MinCores="1" MaxCores="1" />
   </Tasks>
@@ -1212,7 +1218,7 @@ class SetPSTaskPropertyTest(TaskOperationTest):
 
     def run(self):
         xml_job = '''
-<Job Name="ParametricSweepJob" MinCores="1" MaxCores="1">
+<Job Name="ParametricSweepJob" MinCores="1" MaxCores="1" NodeGroups="ComputeNodes" NodeGroupOp="Uniform">
   <Tasks>
     <Task CommandLine="echo *" StartValue="1" EndValue="3" IncrementValue="1" Type="ParametricSweep" MinCores="1" MaxCores="1" Name="Sweep Task" />
   </Tasks>
